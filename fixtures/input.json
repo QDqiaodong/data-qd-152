@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    "A",
+    "B",
+    "C"
+  ],
+  "ballots": [
+    {
+      "id": "one",
+      "ranking": [
+        "A",
+        "B"
+      ],
+      "weight": 4
+    },
+    {
+      "id": "two",
+      "ranking": [
+        "B"
+      ],
+      "weight": 3
+    },
+    {
+      "id": "three",
+      "ranking": [
+        "C",
+        "B"
+      ],
+      "weight": 2
+    }
+  ]
+}
