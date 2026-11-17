@@ -9,5 +9,6 @@ requires-python = ">=3.11"
 dependencies = []
 [project.scripts]
 ranked-ballots = "ranked_ballots.cli:main"
+ranked-ballots-archive = "ranked_ballots.archive_cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
