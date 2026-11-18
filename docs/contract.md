@@ -25,3 +25,11 @@ apply 批次信封恰为 `{batch_id, expected_revision, changes}`，变更只有
 权重（1..10^9）、8MB 严格 JSON 与未知字段/重复键拒绝规则；有效票档始终满足
 候选至多 100、选票至多 20000。
 
+## 纸票抽核（`ranked-ballots-audit`，独立链路）
+
+抽核是**只读**一份 v2 报告与其物理箱位清单的独立工作文件，不更正电子票档、不修改
+归档库/任务/发布状态，也不改变上面的 v1 与归档契约。报告额外要求候选 1..12、按 id
+升序，`winner` 非 `null`，`N = result.total_weight` 为正；清单顶层恰为
+`{containers:[{id,count},...]}`，合计恰等于 N。固定抽样制度为无放回
+（`without_replacement`），随机流、断言编译、e 过程与活动字段详见
+[抽核设计](audit-design.md)。

@@ -9,6 +9,14 @@ from .archive import (
     recover,
     store_status,
 )
+from . import audit
+from .audit import (
+    AuditError,
+    draw,
+    record,
+    start,
+    status,
+)
 
 __all__ = [
     "analyze",
@@ -19,4 +27,10 @@ __all__ = [
     "init_store",
     "recover",
     "store_status",
+    "audit",
+    "AuditError",
+    "start",
+    "draw",
+    "record",
+    "status",
 ]
