@@ -11,5 +11,6 @@ dependencies = []
 ranked-ballots = "ranked_ballots.cli:main"
 ranked-ballots-archive = "ranked_ballots.archive_cli:main"
 ranked-ballots-audit = "ranked_ballots.audit_cli:main"
+ranked-ballots-link = "ranked_ballots.link_cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]

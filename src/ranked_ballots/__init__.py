@@ -17,6 +17,7 @@ from .audit import (
     start,
     status,
 )
+from .link import LinkError, link_records
 
 __all__ = [
     "analyze",
@@ -33,4 +34,6 @@ __all__ = [
     "draw",
     "record",
     "status",
+    "link_records",
+    "LinkError",
 ]

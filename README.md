@@ -2,7 +2,8 @@
 
 Auditable instant runoff counting with exhausted ballots。业务输入、计算和当前边界详见 [数据契约](docs/contract.md)；
 持久化归档与不可变快照的设计依据见 [归档设计](docs/archive-design.md)；
-独立纸票抽核活动的协议、统计假设与设计取舍见 [抽核设计](docs/audit-design.md)。
+独立纸票抽核活动的协议、统计假设与设计取舍见 [抽核设计](docs/audit-design.md)；
+扫描转录与固定 v2 票档的容量对账语义、Hall 见证与算法依据见 [对账设计](docs/link-design.md)。
 
 ## 安装与演示
 
@@ -232,6 +233,72 @@ record("run/audit/session.json", "/tmp/obs-1.json")
 status("run/audit/session.json")
 ```
 
+## 扫描转录容量对账 `ranked-ballots-link`
+
+独立的**只读**对账链路：把一份扫描转录清单（只看清票面部分排名位置）与一份固定 v2
+电子票档（相同排序聚合成带 weight 的票组）做组合一致性核对。它回答两个问题：这些
+转录能否**同时**由给定票档容纳；每条扫描在**全部**合法完整分配中实际可能归属哪些
+票组。它不修改票档或抽核活动，不产出计票胜者或统计认证，也不证明扫描来源真实或票档
+正确。协议、算法与 Hall 见证依据见 [对账设计](docs/link-design.md)。
+
+### 全局容量语义
+
+- 扫描 `slots` 的长度就是完整 ranking 长度；候选 id 是已读位置，`null` 是该位置
+  无法辨读。`null` 不伸缩长度，空数组只与空 ranking 相容。
+- 相容当且仅当等长且每个非 `null` 位置相等。每条扫描恰分给一个相容组，每组接收数
+  不得超过 weight；**未使用电子容量允许保留**。
+- 同 ranking 的不同票组 id 是**不同身份**，不按 ranking 合并，也不丢失组 ID 后借用
+  原 count 结果代替关系核对。
+- `forced` 只针对**给定相容信息与容量约束**成立；多个可能 id 为 `ambiguous`。
+  可能集合覆盖由未用容量产生的替代，而不只是封闭交替环。
+- **合法但不相容**（能解析、能核验，但无完整分配）成功输出 `infeasible` 与可独立
+  核验的 Hall 见证；**输入损坏**（格式错误、规范字节/摘要/result 不符、超界）退出 2
+  并保留旧输出，二者语义不同。
+
+### 可复制示例：取得一份 v2 报告后调用对账
+
+```sh
+mkdir -p run/link
+# 1) 由归档导出（或自行构造）一份规范 v2 报告。
+ranked-ballots-archive export --store run/election --export-id count-2026-11-18
+cp run/election/reports/revision-1.json run/link/report.json
+
+# 2) 扫描转录：顶层恰为 {"records":[{"id","slots"},...]}；null 表示该位置不可辨读。
+cat > run/link/scans.json <<'JSON'
+{"records":[
+  {"id":"s1","slots":["A",null]},
+  {"id":"s2","slots":["A","B"]}
+]}
+JSON
+
+# 3) 对账：成功输出 feasible/infeasible，失败退出 2 且保留旧输出。
+ranked-ballots-link --report run/link/report.json \
+                    --scans  run/link/scans.json \
+                    --output run/link/result.json
+```
+
+若报告含 `g1=([A,B],weight1)`、`g2=([A,C],weight1)`，全局容量强制
+`s1→g2`、`s2→g1`（两条都 `forced`）；只保留 `s1` 时两组皆有未用容量，`s1` 变为
+`ambiguous`，可能集合为 `["g1","g2"]`。三条 `["A",null]` 仅邻接这两个单位组时无
+完整分配，输出 `infeasible`，见证给出 `record_count=3`、`capacity_sum=2`、
+`deficit=1`，且 `ballot_ids` 恰为这两个邻接组。
+
+输出顶层含 `schema_version=1`、`report_sha256`（报告输入字节摘要）、
+`scans_sha256`、`snapshot_sha256`、`status`。可行时附覆盖全部扫描的 `assignment`
+与按 scan_id 升序的 `records`（`possible_ballot_ids` 升序、去重、非空，
+`classification` 为 `forced`/`ambiguous`），`witness=null`；不可行时
+`assignment=null`、`records=[]`，`witness` 含 `scan_ids`、`ballot_ids`、
+`record_count`、`capacity_sum`、`deficit`。见证仅凭输入即可重建邻接关系复核，
+同输入重复运行字节一致。
+
+### 可直接测试的 Python API
+
+```python
+from ranked_ballots import link_records, LinkError
+payload = link_records("run/link/report.json", "run/link/scans.json")
+payload["status"]              # "feasible" 或 "infeasible"
+```
+
 ## 测试
 
 ```sh
@@ -250,10 +317,19 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
   严格差为 0、多个断言在不同前缀首次通过、`μ=0`/`μ>1`/最后一张、阈值恰相等、
   已达预算但仍有缺口、停止后重试/拒绝、重开复算与缓存判定损坏拒绝；数值验收只用
   已实现的无放回制度。
+- `tests/test_link.py`：对账 API 与真实 CLI 子进程测试。极小随机图对全部完整分配
+  做穷举，独立核验可行分配的逐记录相容与容量、可能集合分类与不可行 Hall 见证；
+  覆盖题面强制例（含未用容量替代与严格 Hall 缺口）、同 ranking 不同组身份、空
+  ranking、零记录、10^9 容量不展开、被其他记录占满与仍有余量的组、同一连通块内
+  并非所有相容边均可用、扫描/票组顺序不影响按 ID 展示、1000+ 扫描的长交替依赖大图
+  （可行强制、全歧义与不可行见证）、相容边 200000 上限、格式错误与报告摘要/result/
+  规范字节损坏，以及失败保留旧输出、符号链接与同路径拒绝、固定输入字节一致。
 
 `src/ranked_ballots/model.py` 为业务模型，相关算法模块独立组织；`common.py` 提供
 受限 JSON 及 v1 报告发布，`archive.py` 实现持久化归档，`audit.py` 实现独立的纸票
-抽核活动，`cli.py` / `archive_cli.py` / `audit_cli.py` 衔接三条数据链路。
+抽核活动，`link.py` 实现扫描转录与 v2 票档的容量对账（Dinic 一次最大流 + 残量图
+一次 SCC 分类全部相容边，不展开 weight、不枚举完整分配），`cli.py` /
+`archive_cli.py` / `audit_cli.py` / `link_cli.py` 衔接四条数据链路。
 fixtures 为明确自制样例，代码与样例采用 MIT 许可。
 
 ## 业务规则摘要

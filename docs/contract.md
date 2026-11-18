@@ -25,6 +25,24 @@ apply 批次信封恰为 `{batch_id, expected_revision, changes}`，变更只有
 权重（1..10^9）、8MB 严格 JSON 与未知字段/重复键拒绝规则；有效票档始终满足
 候选至多 100、选票至多 20000。
 
+## 扫描转录对账（`ranked-ballots-link`，独立只读链路）
+
+对账只读一份 v2 报告（最多 32MB）与一份扫描转录 `{records:[{id,slots},...]}`
+（最多 8MB，记录至多 5000），输出 `schema_version=1` 的容量对账结果，不改票档、
+不产出胜者或统计认证。`slots` 长度即完整 ranking 长度（0..100），候选 id 为已读
+位置、`null` 为不可辨读位置；空数组只与空 ranking 相容，`null` 不伸缩长度。相容
+当且仅当等长且每个非 `null` 位置相等；每条扫描恰分给一个相容票组，票组接收数不
+超过 weight，未用容量允许保留。派生相容边至多 200000，超过即退出 2；按 weight
+展开个体票与枚举完整分配均被禁止。
+
+报告校验沿用 v2 完整契约：报告字节必须等于 `archive.canonical_bytes(report)`，
+`snapshot_sha256` 对规范 `{candidates,ballots}` 计算，`result` 与 `analyze` 一致；
+同 ranking 不同 id 是不同组，不合并、不借用原 count 代替关系核对。可行时给出一份
+完整分配见证，并对每条扫描给出在**全部**合法完整分配中的可能票组 id（升序；单个
+为 `forced`，多个为 `ambiguous`）；不可行时给出非空扫描子集 `S` 与其全部相容邻接
+组 `N(S)`，满足 `|S|` 严格大于邻接组 weight 之和，并给出正 `deficit`。算法、
+Hall 见证核验与边界见 [对账设计](link-design.md)。
+
 ## 纸票抽核（`ranked-ballots-audit`，独立链路）
 
 抽核是**只读**一份 v2 报告与其物理箱位清单的独立工作文件，不更正电子票档、不修改
