@@ -17,6 +17,7 @@ from .audit import (
     start,
     status,
 )
+from .disclosure import DisclosureError, disclosure_analysis, disclosure_report
 from .link import LinkError, link_records
 from .pairwise import pairwise_analysis
 from .sensitivity import sensitivity_analysis, sensitivity_report
@@ -38,6 +39,9 @@ __all__ = [
     "status",
     "link_records",
     "LinkError",
+    "DisclosureError",
+    "disclosure_analysis",
+    "disclosure_report",
     "pairwise_analysis",
     "sensitivity_analysis",
     "sensitivity_report",

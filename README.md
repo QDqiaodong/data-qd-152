@@ -4,7 +4,8 @@ Auditable instant runoff counting with exhausted ballots。业务输入、计算
 持久化归档与不可变快照的设计依据见 [归档设计](docs/archive-design.md)；
 独立纸票抽核活动的协议、统计假设与设计取舍见 [抽核设计](docs/audit-design.md)；
 扫描转录与固定 v2 票档的容量对账语义、Hall 见证与算法依据见 [对账设计](docs/link-design.md)；
-两两偏好矩阵、严格多数图与 Condorcet winner 的语义与实现取舍见 [两两偏好设计](docs/pairwise-design.md)。
+两两偏好矩阵、严格多数图与 Condorcet winner 的语义与实现取舍见 [两两偏好设计](docs/pairwise-design.md)；
+首选票公开汇总表的遮盖规划、可推断性判据与算法依据见 [遮盖规划设计](docs/disclosure-design.md)。
 
 ## 安装与演示
 
@@ -434,6 +435,118 @@ report["baseline"]["winner"]                     # "B"
 [s["withdrawn_candidate"] for s in report["scenarios"]]  # ["A", "B", "C"]
 ```
 
+## 首选票汇总遮盖规划 `ranked-ballots-disclosure`
+
+独立的**只读**规划链路：把 1..8 个选区各自的首选票（空 ranking 计入空白列）
+汇总成一张公开表，判定哪些“可额外遮盖”的格必须一并遮盖，才能让每个必遮格在
+相容表中仍可变化，并发布**只含公开汇总表、行列合计和遮盖位置**的正式报告。
+它不替代任何计票、归档、抽核、对账、两两偏好或敏感性分析；输入错误、规划无解、
+输入/输出同路径、输出为符号链接或写入失败时退出 2，stderr 说明原因且不泄露
+格值，并保留既有输出字节。设计与判据见 [遮盖规划设计](docs/disclosure-design.md)。
+
+### 输入与汇总语义
+
+- 顶层恰为 `{precincts,protect,optional}`。`precincts` 为 1..8 个
+  `{id,candidates,ballots}`，选区 ID 唯一；每区是一份独立的既有 v1 票组输入，
+  由同一套规则校验（票组 `id`、`ranking`、`weight` 1..10^9）。各区候选集合相同、
+  含 1..5 个候选，全部选区合计至多 20000 个票组；票组 ID 只需在**本区内**唯一，
+  不同选区可复用。**禁止**按 weight 展开票组。
+- 非空 ranking 的全部 weight 计入首位候选；空 ranking 的全部 weight 计入独立的
+  空白列。公开表每选区一行，列为候选 ID 升序后接空白列。
+- `protect` 为非空必遮坐标数组，`optional` 为至多 10 项的可选坐标数组；每项
+  `{precinct,candidate}`，`candidate:null` 代表空白列。坐标必须存在，两数组各自
+  不重复且互不相交。沿用严格 JSON 解析与 8 MB 输入上限。
+
+### 遮盖判据与最优方案
+
+固定一个方案后，公开可见的是未遮盖格的值和全部行列合计；给定必遮格，若相容的
+非负整数表能让它取到至少两个不同值，该格即受保护。**不同必遮格可以由不同的相容表
+证明**；输入票组内容与权重不是公开约束，替代表只需满足公开格与边际合计。每个方案
+都按新方案的可见格重新判断，不沿用上一方案的推断。
+
+在所有允许方案中选额外遮盖最少的；同样少时取排序后坐标序列字典序最小者（坐标按
+选区 ID、再按候选 ID 排序，空白列在最后）。判定基于真实表的剩余网络可达性——
+只有遮盖格带剩余弧，必遮格可变当且仅当存在经过它的剩余环——**不逐一枚举格值**，
+10^9 权重与 1 权重代价相同。若无任何方案合格（例如某行合计为零，其必遮格被迫为
+零）则退出 2。
+
+这是**单份发布表**的可推断性指标，不保证抵御外部信息、历史发布或对遮盖选择过程
+的推断。
+
+### 输出字段
+
+规范 JSON（UTF-8）顶层恰为 `schema_version:1`、`columns`、`column_totals`、
+`rows`、`suppressed`：
+
+- `columns`：候选 ID 升序，末尾 `null`；
+- `column_totals`：对齐列的整数数组，含空白列合计；
+- `rows`：按选区 ID 排序的 `{precinct,total,values}`，`values` 与列对齐，遮盖处
+  `null`，未遮盖格（含零值）为整数；
+- `suppressed`：按坐标顺序列出全部遮盖格（格式同输入坐标，不区分必遮与附加遮盖）。
+
+报告不含内部可行表、隐藏格原值或源文件摘要。重排等价输入的选区、候选、票组及
+两类坐标数组，报告字节不变。
+
+### 可复制示例
+
+两行 `(1,3,3)` 与 `(3,1,1)`，列为 A、B、空白；强制遮盖 `north/A`。单遮该格仍可
+反推，故最优方案额外遮盖 A、B 两列组成的矩形其余三格。
+
+```sh
+mkdir -p run/disclosure
+cat > run/disclosure/input.json <<'JSON'
+{"precincts":[
+  {"id":"north","candidates":["A","B"],"ballots":[
+    {"id":"n1","ranking":["A"],"weight":1},
+    {"id":"n2","ranking":["B","A"],"weight":3},
+    {"id":"n3","ranking":[],"weight":3}]},
+  {"id":"south","candidates":["B","A"],"ballots":[
+    {"id":"s1","ranking":["A","B"],"weight":3},
+    {"id":"s2","ranking":["B"],"weight":1},
+    {"id":"s3","ranking":[],"weight":1}]}
+ ],
+ "protect":[{"precinct":"north","candidate":"A"}],
+ "optional":[
+   {"precinct":"north","candidate":"B"},
+   {"precinct":"north","candidate":null},
+   {"precinct":"south","candidate":"A"},
+   {"precinct":"south","candidate":"B"},
+   {"precinct":"south","candidate":null}]}
+JSON
+ranked-ballots-disclosure --source run/disclosure/input.json \
+                          --output run/disclosure/report.json
+cat run/disclosure/report.json
+```
+
+报告（节选）：`columns` 为 `["A","B",null]`，`column_totals` 为 `[4,4,4]`，
+两行合计 `7` 与 `5`；`suppressed` 依次为 `north/A`、`north/B`、`south/A`、
+`south/B`，两行的空白列值 `3`、`1` 保持可见：
+
+```json
+{"column_totals":[4,4,4],"columns":["A","B",null],
+ "rows":[{"precinct":"north","total":7,"values":[null,null,3]},
+         {"precinct":"south","total":5,"values":[null,null,1]}],
+ "schema_version":1,
+ "suppressed":[{"candidate":"A","precinct":"north"},
+               {"candidate":"B","precinct":"north"},
+               {"candidate":"A","precinct":"south"},
+               {"candidate":"B","precinct":"south"}]}
+```
+
+### 可直接测试的 Python API
+
+```python
+from ranked_ballots import disclosure_analysis, disclosure_report, DisclosureError
+
+report = disclosure_analysis({          # 已解析对象，无 I/O
+    "precincts": [...], "protect": [...], "optional": [...],
+})
+report["suppressed"]                     # 按坐标顺序的 {precinct,candidate}
+
+disclosure_report("run/disclosure/input.json",   # 路径入口，与 CLI 一致
+                  "run/disclosure/report.json")
+```
+
 ## 测试
 
 ```sh
@@ -466,6 +579,12 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
   weight=10^9 与 2×10^13 精确合计、100 候选 4950 对全覆盖、输入重排字节一致、
   ranking 顺序只翻转表达方向，以及重复排名/未知候选/重复票组 id/布尔或越界
   weight/重复 JSON 键/未知字段拒绝且保留旧输出、同路径与符号链接拒绝。
+- `tests/test_disclosure.py`：遮盖规划 API 与真实 CLI 子进程测试。小整数表对照
+  独立穷举（枚举全部相容非负整数表、每必遮格可取值、最少且字典序最小的方案）逐格
+  核对；覆盖题面两行矩形示例（并验证同样大小的另一方案未被选中）、零行无解、
+  多必遮格共享额外遮盖与由不同相容表分别证明、空 ranking 与十亿权重、不同选区复用
+  票组 ID、重排字节一致、非法/重复/相交坐标、超限与坏 JSON、无解、同路径、符号
+  链接、保留旧输出，以及评估次数不随格值大小增长。
 - `tests/test_sensitivity.py`：候选退出敏感性 API 与真实 CLI 子进程测试。每个场景
   由独立 from-spec 重算（原始输入单候选删除后再次调用 `analyze`）对照全字段；覆盖
   至少一个退出改变赢家、另一个退出清空非空 ranking 并增加耗尽权重、退出候选不在
@@ -480,8 +599,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 一次 SCC 分类全部相容边，不展开 weight、不枚举完整分配），`pairwise.py` 实现独立
 的两两偏好分析（逐票组只累计表达的候选对，由同一份完整矩阵推导严格多数图、强连通
 分量与 Condorcet winner），`cli.py` / `archive_cli.py` / `audit_cli.py` /
-`link_cli.py` / `pairwise_cli.py` / `sensitivity_cli.py` 衔接六条数据链路，
-`sensitivity.py` 以既有 `analyze` 为唯一计票语义，逐候选构造单候选退出场景。
+`link_cli.py` / `pairwise_cli.py` / `sensitivity_cli.py` / `disclosure_cli.py` 衔接七条
+数据链路，`sensitivity.py` 以既有 `analyze` 为唯一计票语义，逐候选构造单候选退出
+场景，`disclosure.py` 以剩余网络可达性判定首选票汇总表的遮盖可推断性。
 fixtures 为明确自制样例，代码与样例采用 MIT 许可。
 
 ## 业务规则摘要

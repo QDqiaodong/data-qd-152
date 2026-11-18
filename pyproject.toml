@@ -14,5 +14,6 @@ ranked-ballots-audit = "ranked_ballots.audit_cli:main"
 ranked-ballots-link = "ranked_ballots.link_cli:main"
 ranked-ballots-pairwise = "ranked_ballots.pairwise_cli:main"
 ranked-ballots-sensitivity = "ranked_ballots.sensitivity_cli:main"
+ranked-ballots-disclosure = "ranked_ballots.disclosure_cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
