@@ -3,7 +3,8 @@
 Auditable instant runoff counting with exhausted ballots。业务输入、计算和当前边界详见 [数据契约](docs/contract.md)；
 持久化归档与不可变快照的设计依据见 [归档设计](docs/archive-design.md)；
 独立纸票抽核活动的协议、统计假设与设计取舍见 [抽核设计](docs/audit-design.md)；
-扫描转录与固定 v2 票档的容量对账语义、Hall 见证与算法依据见 [对账设计](docs/link-design.md)。
+扫描转录与固定 v2 票档的容量对账语义、Hall 见证与算法依据见 [对账设计](docs/link-design.md)；
+两两偏好矩阵、严格多数图与 Condorcet winner 的语义与实现取舍见 [两两偏好设计](docs/pairwise-design.md)。
 
 ## 安装与演示
 
@@ -299,6 +300,73 @@ payload = link_records("run/link/report.json", "run/link/scans.json")
 payload["status"]              # "feasible" 或 "infeasible"
 ```
 
+## 两两偏好分析 `ranked-ballots-pairwise`
+
+独立的**只读**分析链路：在与 v1 相同的严格 `{candidates, ballots}` 契约上，为
+**每个无序候选对**累计精确整数表达权重，输出完整两两矩阵、严格多数有向图、
+强连通分量和 Condorcet winner。它不替代 IRV 计票或纸票抽核，不修改归档库与
+任何既有结果；输入错误、计算失败、输入/输出同路径或输出为符号链接时退出 2
+并保留既有输出字节。语义与实现取舍见 [两两偏好设计](docs/pairwise-design.md)。
+
+### 两两表达权重与缺省语义
+
+- 对票组 ranking `r`、权重 `w`：只有候选对**双方都出现在** `r` 中时，该组才对
+  这一对贡献权重，排名靠前者获得全部 `w`；任一方缺失时该组对这一对不贡献给
+  任一方。缺失候选**不**解释成末位偏好、平票或弃权后仍计入；空 ranking 不表达
+  任何一对；相同 ranking 的不同票组各自贡献自己的 weight。
+- 输出 `comparisons` 覆盖全部 C(n,2) 个无序对且每对恰一次（含双方均未表达的
+  候选对），按 `(candidate_a, candidate_b)` 字典序排列；每行恰为
+  `candidate_a`、`candidate_b`、`a_over_b_weight`、`b_over_a_weight`、
+  `unexpressed_weight`、`pairwise_winner`。恒有
+  `unexpressed_weight = total_weight - a_over_b_weight - b_over_a_weight`；
+  两侧权重相等（含双方为零）时 `pairwise_winner=null`，否则为权重较高一方。
+- 所有累计值为精确整数（20000 组 × 10^9 允许合计 2×10^13），不进行浮点换算。
+
+### 严格多数图、强连通分量与 Condorcet winner
+
+- `majority_graph`：`nodes` 为升序候选 ID（孤立候选也在其中），`edges` 按
+  `(from, to)` 字典序；仅当某候选对一侧表达权重**严格**大于另一侧时才有从
+  较高方指向较低方的边，相等或双方为零没有边。未表达权重、IRV 淘汰顺序与
+  候选 ID 顺序均不产生边。
+- `strongly_connected_components`：多数图的强连通分量，覆盖每个候选恰好一次；
+  分量内按 ID 升序，分量按各自最小 ID 升序；孤立候选单独形成分量。
+- `condorcet_winner`：唯一对每个其他候选都有直接严格多数边的候选 ID，否则为
+  null（仅一个候选时该候选满足条件）。**它不是 IRV winner**：IRV 胜者由逐轮
+  淘汰规则产生，两两多数环（A>B、B>C、C>A）下 IRV 仍有胜者而
+  `condorcet_winner=null`；也不要把强连通分量的顺序当作 Condorcet 结论。
+
+### 可复制示例
+
+```sh
+mkdir -p run/pairwise
+cat > run/pairwise/input.json <<'JSON'
+{"candidates":["A","B","C"],
+ "ballots":[{"id":"g1","ranking":["A","B"],"weight":4},
+            {"id":"g2","ranking":["B","C"],"weight":4},
+            {"id":"g3","ranking":["C","A"],"weight":4}]}
+JSON
+ranked-ballots-pairwise --source run/pairwise/input.json \
+                        --output run/pairwise/report.json
+# majority_graph.edges: A->B, B->C, C->A；strongly_connected_components:
+# [["A","B","C"]]；condorcet_winner: null（IRV 对此输入仍产生胜者 B）
+```
+
+同一有效输入重跑字节一致；重排输入 `candidates` 与 `ballots` 不改变规范输出
+字节，改变 ranking 中的候选顺序只影响实际表达的 pairwise 方向。
+
+### 可直接测试的 Python API
+
+```python
+from ranked_ballots import pairwise_analysis
+result = pairwise_analysis({
+    "candidates": ["A", "B", "C"],
+    "ballots": [{"id": "g1", "ranking": ["A", "B"], "weight": 4},
+                {"id": "g2", "ranking": ["B", "C"], "weight": 4},
+                {"id": "g3", "ranking": ["C", "A"], "weight": 4}],
+})
+result["condorcet_winner"]   # None
+```
+
 ## 测试
 
 ```sh
@@ -324,12 +392,21 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
   并非所有相容边均可用、扫描/票组顺序不影响按 ID 展示、1000+ 扫描的长交替依赖大图
   （可行强制、全歧义与不可行见证）、相容边 200000 上限、格式错误与报告摘要/result/
   规范字节损坏，以及失败保留旧输出、符号链接与同路径拒绝、固定输入字节一致。
+- `tests/test_pairwise.py`：两两偏好 API 与真实 CLI 子进程测试。随机实例对照
+  独立重算（组合式矩阵 + 互可达分量）全字段一致；覆盖 A>B/B>C/C>A 环同一分量
+  且 Condorcet 为 null、单侧/双侧未表达权重、平局（含双方为零）无边且严格多 1
+  才出边、多分量图上环之上仍有 Condorcet winner、空票档/空 ranking/单候选/
+  weight=10^9 与 2×10^13 精确合计、100 候选 4950 对全覆盖、输入重排字节一致、
+  ranking 顺序只翻转表达方向，以及重复排名/未知候选/重复票组 id/布尔或越界
+  weight/重复 JSON 键/未知字段拒绝且保留旧输出、同路径与符号链接拒绝。
 
 `src/ranked_ballots/model.py` 为业务模型，相关算法模块独立组织；`common.py` 提供
 受限 JSON 及 v1 报告发布，`archive.py` 实现持久化归档，`audit.py` 实现独立的纸票
 抽核活动，`link.py` 实现扫描转录与 v2 票档的容量对账（Dinic 一次最大流 + 残量图
-一次 SCC 分类全部相容边，不展开 weight、不枚举完整分配），`cli.py` /
-`archive_cli.py` / `audit_cli.py` / `link_cli.py` 衔接四条数据链路。
+一次 SCC 分类全部相容边，不展开 weight、不枚举完整分配），`pairwise.py` 实现独立
+的两两偏好分析（逐票组只累计表达的候选对，由同一份完整矩阵推导严格多数图、强连通
+分量与 Condorcet winner），`cli.py` / `archive_cli.py` / `audit_cli.py` /
+`link_cli.py` / `pairwise_cli.py` 衔接五条数据链路。
 fixtures 为明确自制样例，代码与样例采用 MIT 许可。
 
 ## 业务规则摘要

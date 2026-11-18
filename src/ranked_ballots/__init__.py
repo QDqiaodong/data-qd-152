@@ -18,6 +18,7 @@ from .audit import (
     status,
 )
 from .link import LinkError, link_records
+from .pairwise import pairwise_analysis
 
 __all__ = [
     "analyze",
@@ -36,4 +37,5 @@ __all__ = [
     "status",
     "link_records",
     "LinkError",
+    "pairwise_analysis",
 ]
