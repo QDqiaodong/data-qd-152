@@ -367,6 +367,73 @@ result = pairwise_analysis({
 result["condorcet_winner"]   # None
 ```
 
+## 候选退出敏感性分析 `ranked-ballots-sensitivity`
+
+独立的**只读**反事实报告链路：在与 v1 相同的严格 `{candidates, ballots}` 契约上，
+先用既有 `analyze` 计算基准 IRV 结果，再对**每个候选**建立恰好一个“该候选退出”
+场景并复算。它不替代单次计票、归档、抽核或对账，不修改票档、扫描票组分配及任何
+既有输出；输入错误、场景/计票失败、输入/输出同路径或输出为符号链接时退出 2 并
+保留既有输出字节。
+
+### 场景语义
+
+- 基准场景直接使用**未经修改**的已验证输入调用 `analyze`，因此严格多数、非多数
+  时淘汰最低票候选、并列时淘汰候选 ID 字典序最小者、没有继续票时 `winner=null`
+  等规则与既有实现完全一致，不另行复制计票规则。
+- 每个退出候选 `c` 的场景都从**同一份原始已验证输入**构造，不累积前一个场景的
+  变更：从 `candidates` 删除 `c`，从每个 ballot ranking 删除 `c`，保留全部 ballot
+  id 与 weight；删除后变空的 ranking **仍保留为票组**，不删票组、不调整权重、不
+  改变其余候选的相对顺序。
+- 场景按退出候选 ID 升序处理。权重始终按聚合票组计算，**绝不**按 weight 展开成
+  单张票；所有轮次、权重和与差值均为精确整数。
+- 单候选输入的退出场景候选列表为空；该边界按本题定义返回 `winner=null`、空
+  `rounds`、`total_weight=0`。其余场景一律走既有 `analyze`。
+
+### 输出字段
+
+规范 JSON 对象（UTF-8、`ensure_ascii=False`、`sort_keys=True`、
+`separators=(',',':')`、恰一个末尾换行）顶层恰为：
+
+- `format`：固定为 `1`。
+- `source_sha256`：原始已验证业务输入的规范序列化 SHA256——候选按 ID 升序、票组按
+  id 升序、ranking 保持原顺序，规范 JSON 加一个换行，与归档 `snapshot_sha256` 的
+  做法一致。因此同一有效输入的 `candidates`/`ballots` 数组重排会得到逐字节相同的
+  报告；改变 ranking 内顺序会改变摘要，并按既有计票语义影响结果。报告中的
+  `baseline`、每个 `input`/`result`/`changes` 均可独立复算，不依赖该摘要。
+- `baseline`：既有 `analyze` 对原输入的完整结果。
+- `scenarios`：按退出候选 ID 升序的数组，每项恰为 `withdrawn_candidate`、
+  `input`、`result`、`changes`。`input` 是该场景完整的规范业务输入，`result` 是对
+  该 `input` 调用 `analyze` 的完整结果；`changes` 恰为 `winner_changed`、
+  `winner_before`、`winner_after`、`continuing_weight_delta`、
+  `exhausted_weight_delta`，后两者为场景结果最后一轮相应权重减去基准最后一轮相应
+  权重，无 `rounds` 时按 0 处理。
+
+报告中不含时间戳、随机值或机器相关字段。
+
+### 可复制示例
+
+```sh
+mkdir -p run/sensitivity
+ranked-ballots-sensitivity --source fixtures/input.json \
+                           --output run/sensitivity/report.json
+# baseline.winner = "B"；scenarios 依次为退出 A、B、C 的场景。
+```
+
+同一有效输入重跑字节一致；发布时在目标目录临时文件逐场景流式写出，写完 fsync 并
+回读校验长度与 SHA256，再以单次 `os.replace` 更新输出。任何读取、校验、场景生成、
+计票或写入失败都删除临时文件并保留原输出字节。CLI 成功后向 stdout 输出与文件相同
+的规范字节。
+
+### 可直接测试的 Python API
+
+```python
+from ranked_ballots import sensitivity_report  # 路径入口，与 CLI 一致
+
+report = sensitivity_report("fixtures/input.json", "run/sensitivity/report.json")
+report["baseline"]["winner"]                     # "B"
+[s["withdrawn_candidate"] for s in report["scenarios"]]  # ["A", "B", "C"]
+```
+
 ## 测试
 
 ```sh
@@ -399,6 +466,13 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
   weight=10^9 与 2×10^13 精确合计、100 候选 4950 对全覆盖、输入重排字节一致、
   ranking 顺序只翻转表达方向，以及重复排名/未知候选/重复票组 id/布尔或越界
   weight/重复 JSON 键/未知字段拒绝且保留旧输出、同路径与符号链接拒绝。
+- `tests/test_sensitivity.py`：候选退出敏感性 API 与真实 CLI 子进程测试。每个场景
+  由独立 from-spec 重算（原始输入单候选删除后再次调用 `analyze`）对照全字段；覆盖
+  至少一个退出改变赢家、另一个退出清空非空 ranking 并增加耗尽权重、退出候选不在
+  任何 ranking、空 ranking 保留 weight、weight=10^9 精确差值、单候选输入的空候选
+  场景、100 候选 × 20000 聚合计票不展开 weight、输入数组重排字节一致、ranking
+  顺序遵循既有 `analyze`，以及非法输入/重复 JSON 键/未知字段/布尔或越界 weight/
+  同路径/符号链接/临时写入与替换失败均保留旧输出字节。
 
 `src/ranked_ballots/model.py` 为业务模型，相关算法模块独立组织；`common.py` 提供
 受限 JSON 及 v1 报告发布，`archive.py` 实现持久化归档，`audit.py` 实现独立的纸票
@@ -406,7 +480,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 一次 SCC 分类全部相容边，不展开 weight、不枚举完整分配），`pairwise.py` 实现独立
 的两两偏好分析（逐票组只累计表达的候选对，由同一份完整矩阵推导严格多数图、强连通
 分量与 Condorcet winner），`cli.py` / `archive_cli.py` / `audit_cli.py` /
-`link_cli.py` / `pairwise_cli.py` 衔接五条数据链路。
+`link_cli.py` / `pairwise_cli.py` / `sensitivity_cli.py` 衔接六条数据链路，
+`sensitivity.py` 以既有 `analyze` 为唯一计票语义，逐候选构造单候选退出场景。
 fixtures 为明确自制样例，代码与样例采用 MIT 许可。
 
 ## 业务规则摘要

@@ -1,12 +1,14 @@
 """Strict local JSON contract and atomic report publication."""
 from pathlib import Path
-import hashlib, json, os, tempfile
+import hashlib, json, os, re, tempfile
 
 def require(obj,keys):
     if not isinstance(obj,dict) or set(obj)!=set(keys.split()):raise ValueError('expected object fields: '+keys)
 
+_CONTROL=re.compile(r'[\x00-\x1f]')
+
 def ident(v):
-    if not isinstance(v,str) or not v or v!=v.strip() or len(v)>128 or any(ord(c)<32 for c in v):
+    if not isinstance(v,str) or not v or v!=v.strip() or len(v)>128 or _CONTROL.search(v):
         raise ValueError('expected nonblank identifier, <=128 characters')
     return v
 

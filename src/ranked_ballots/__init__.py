@@ -19,6 +19,7 @@ from .audit import (
 )
 from .link import LinkError, link_records
 from .pairwise import pairwise_analysis
+from .sensitivity import sensitivity_analysis, sensitivity_report
 
 __all__ = [
     "analyze",
@@ -38,4 +39,6 @@ __all__ = [
     "link_records",
     "LinkError",
     "pairwise_analysis",
+    "sensitivity_analysis",
+    "sensitivity_report",
 ]
