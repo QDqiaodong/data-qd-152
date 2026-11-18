@@ -1,7 +1,8 @@
 # data-qd-152 · 排序选票逐轮计票
 
 Auditable instant runoff counting with exhausted ballots。业务输入、计算和当前边界详见 [数据契约](docs/contract.md)；
-持久化归档与不可变快照的设计依据见 [归档设计](docs/archive-design.md)。
+持久化归档与不可变快照的设计依据见 [归档设计](docs/archive-design.md)；
+独立纸票抽核活动的协议、统计假设与设计取舍见 [抽核设计](docs/audit-design.md)。
 
 ## 安装与演示
 
@@ -126,6 +127,111 @@ store_status("run/election")
 recover("run/election")
 ```
 
+## 纸票抽核活动 `ranked-ballots-audit`
+
+独立的单操作者工作文件，只读**一份固定 v2 报告**和一份**物理箱位清单**，输出待取
+物理位置、人工解释与 `continue` / `certified` / `not_certified` 决策。它不更正电子
+票档，不修改归档库、任务或发布状态，也不改动上面的两个入口。协议、统计假设与
+设计取舍见 [抽核设计](docs/audit-design.md)。
+
+```sh
+ranked-ballots-audit start  --report V2_JSON --manifest JSON --seed HEX \
+                            --risk P/Q --max-draws M --session FILE
+ranked-ballots-audit draw   --session FILE --count K
+ranked-ballots-audit record --session FILE --source JSON
+ranked-ballots-audit status --session FILE
+```
+
+成功输出状态 JSON；可解释失败退出 2 并保留活动文件字节。固定抽样制度为
+**无放回均匀抽取（`without_replacement`）**，有放回制度不实现、不混用。
+
+### 一轮可复现示例 start → draw → 乱序 record → status
+
+```sh
+mkdir -p run/audit
+# 1) 由 fixtures 生成一份规范 v2 报告（N=9）。真实场景可直接用
+#    run/election/reports/revision-<r>.json。
+.venv/bin/python - <<'PY'
+import hashlib, json
+from ranked_ballots import analyze, canonical_bytes
+data = json.load(open("fixtures/input.json"))
+ledger = {"candidates": sorted(data["candidates"]),
+          "ballots": sorted(data["ballots"], key=lambda b: b["id"])}
+report = {"schema_version": 2, "revision": 0,
+          "candidates": ledger["candidates"], "ballots": ledger["ballots"],
+          "snapshot_sha256": hashlib.sha256(canonical_bytes(ledger)).hexdigest(),
+          "result": analyze(ledger)}
+open("run/audit/report.json", "wb").write(canonical_bytes(report))
+PY
+
+# 2) 物理清单合计必须恰为 N=9；箱序在内部按 id 升序规范化。
+cat > run/audit/manifest.json <<'JSON'
+{"containers":[{"id":"box-b","count":4},{"id":"box-a","count":5}]}
+JSON
+
+# 3) start：固定报告、清单、seed、制度与预算；只建新文件。
+.venv/bin/ranked-ballots-audit start \
+  --report run/audit/report.json \
+  --manifest run/audit/manifest.json \
+  --seed 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff \
+  --risk 1/4 --max-draws 6 --session run/audit/session.json
+# {"design":"without_replacement","consumed":0,"verdict":"continue", ...}
+
+# 4) draw：发出两个物理位置，展开箱号与箱内 1 基位置。
+.venv/bin/ranked-ballots-audit draw --session run/audit/session.json --count 2
+
+# 5) 先解释第 2 抽（第 1 抽仍缺）—— consumed 仍为 0，等待缺口补齐。
+cat > run/audit/obs-2.json <<'JSON'
+{"observations":[{"draw_index":2,"ranking":["B"]}]}
+JSON
+.venv/bin/ranked-ballots-audit record --session run/audit/session.json \
+  --source run/audit/obs-2.json
+# {"consumed":0,"reason":"awaiting_explanation_of_earlier_draws","verdict":"continue", ...}
+
+# 6) 再解释第 1 抽，前缀从 1 开始顺序消费；missing 是逐断言最坏下界，
+#    空 ranking 不是 missing。
+cat > run/audit/obs-1.json <<'JSON'
+{"observations":[{"draw_index":1,"missing":true}]}
+JSON
+.venv/bin/ranked-ballots-audit record --session run/audit/session.json \
+  --source run/audit/obs-1.json
+# consumed=2；每条断言给出定义/pending|passed/E/y_sum/first_pass_draw/passing_rule
+
+# 7) status：只读重现同一状态（含每抽位置、是否解释、是否消费）。
+.venv/bin/ranked-ballots-audit status --session run/audit/session.json
+```
+
+活动文件是纯 JSON，内嵌固定报告、清单、seed、制度与已发出抽次；重开时从头重算
+判定，原报告/清单文件删除后仍可继续。
+
+### 统计假设与活动字段（摘要）
+
+- 每条预定断言（淘汰轮的严格正差、终轮多数）各跑一个精确有理 e 过程；`E`、`y` 和
+  以约分 `numerator/denominator` 字符串输出，阈值用整数交叉相乘判断。
+- 无放回制度下 `μ = min(1,(N/2-S)/(N-t+1))`；`S>N/2` 由总体界通过，`μ` 为负表示零
+  假设已不可能，不作负乘子。`missing` 对每条断言取最坏 `x=-1`。
+- 仅当**全部**预定断言通过才 `certified`；错误路径至少有一条真零假设，故不把 α
+  机械除以断言数。有缺口时只能消费从 1 开始的连续前缀，认证在最早停止抽次冻结。
+- 活动文件字段：`protocol`、`protocol_version`、`design`、`report_path`、
+  `report_sha256`（报告输入字节 SHA256）、`report`、`manifest_path`、
+  `manifest_sha256`（规范清单 SHA256）、`manifest`、
+  `seed`、`risk`、`max_draws`、`n`、`budget`、`assertions`、`draws`、
+  `observations`、`derived`。`derived` 只是可读缓存，读取时必与重算结果完全一致。
+- `seed`/SHA 流只保证可复现，不证明外部 seed 随机独立或未被挑选，也不是现实选举
+  安全保证；活动文件不承担恶意篡改鉴定。本协议是题面定义的合成抽核，不声称官方
+  或法定审计。
+
+### 可直接测试的 Python API
+
+```python
+from ranked_ballots import start, draw, record, status, AuditError
+start("run/election/reports/revision-1.json", "/tmp/manifest.json",
+      "0011...eeff", "1/4", 6, "run/audit/session.json")
+draw("run/audit/session.json", 2)
+record("run/audit/session.json", "/tmp/obs-1.json")
+status("run/audit/session.json")
+```
+
 ## 测试
 
 ```sh
@@ -139,10 +245,16 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
   崩溃注入（登记前、写文件中、文件就位后、发布提交前后）。
 - 测试屏障/崩溃点只通过环境变量 `RB_ARCHIVE_BARRIER`、`RB_ARCHIVE_CRASH_POINT`
   暴露给测试 worker，生产命令没有延时参数。
+- `tests/test_audit.py`：抽核 API 与真实 CLI 子进程测试，覆盖清单排列不影响序列、
+  大 N 不展开、跨调用拒绝映射连续、空排序与 missing 的区别、转移后的 active 首选、
+  严格差为 0、多个断言在不同前缀首次通过、`μ=0`/`μ>1`/最后一张、阈值恰相等、
+  已达预算但仍有缺口、停止后重试/拒绝、重开复算与缓存判定损坏拒绝；数值验收只用
+  已实现的无放回制度。
 
 `src/ranked_ballots/model.py` 为业务模型，相关算法模块独立组织；`common.py` 提供
-受限 JSON 及 v1 报告发布，`archive.py` 实现持久化归档，`cli.py` / `archive_cli.py`
-衔接两条数据链路。fixtures 为明确自制样例，代码与样例采用 MIT 许可。
+受限 JSON 及 v1 报告发布，`archive.py` 实现持久化归档，`audit.py` 实现独立的纸票
+抽核活动，`cli.py` / `archive_cli.py` / `audit_cli.py` 衔接三条数据链路。
+fixtures 为明确自制样例，代码与样例采用 MIT 许可。
 
 ## 业务规则摘要
 
